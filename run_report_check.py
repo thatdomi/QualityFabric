@@ -9,8 +9,20 @@ import pandas as pd
 
 from utils.PowerBIRestHandler import PowerBIRestHandler
 
+import argparse
+import yaml
+import os
+
 HAS_REPORT_ERRORS = False
 RESULTS = []
+
+import subprocess
+
+
+def load_config(config_file):
+    with open(config_file, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
 
 class PowerBIReportProbe:
     def __init__(self, profile_name=None):
@@ -79,41 +91,50 @@ class PowerBIReportProbe:
             print("no errors in visuals found")
             return False
 
+
     def get_report_all_pages(self, report_base_url):
         # function to loop through all pages within a report
-        current_page_id = "" # arbitrary ids
-        next_page_id = "init" # arbitrary ids
-        next_page_number = 0 # start with zero but directly add 1 in the first loop to properly count pages
-        report_page_numbers = 0
-        # check if the ids are the same, if we exceed the numbers of pages, the last two ids are the same.
-        while current_page_id != next_page_id:
-            next_page_number = next_page_number + 1 # start the loop with the next page
-            current_page_id = next_page_id
-            url = self.get_report_page_url(report_base_url=report_base_url, page_number=next_page_number)
-            self.load_report_page_by_url(url=url)
-            next_page_id = self.get_report_page_id(self.driver.current_url)
+        self.load_report_page_by_url(report_base_url)
+        try:
+            # Assuming the buttons are within a mat-action-list
+            mat_action_list = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//mat-action-list[@data-testid='pages-navigation-list']"))
+            )
+            # Locate the buttons within the mat-action-list (adjust the locator as per your HTML structure)
+            buttons = mat_action_list.find_elements(By.TAG_NAME, "button")
+        
+        except:
+            # if there is only one page, there is no page navigation
+            print("no page buttons found")
+            buttons = [0]
 
-            # ensure we are not checking same page twice
-            if current_page_id != next_page_id:
-                has_report_page_errors = self.has_report_page_error_visuals()
+        current_page_number = 1
+        report_pages_count = len(buttons)
+        for button in buttons:
+            if type(button) != int: # if the button is a button object and not the arbitrary 0, click the button
+                button.click()
+            report_page_url = self.driver.current_url
+            page_id = self.get_report_page_id(self.driver.current_url)
+            has_report_page_errors = self.has_report_page_error_visuals()
+            
+            self.log_results(
+                report_base_url=report_base_url,
+                url=report_page_url,
+                report_page_number=f"{current_page_number}/{report_pages_count}",
+                has_report_page_errors=has_report_page_errors
+                )
+
+            print(f"Page Url: {report_page_url}")
+            print(f"Page {current_page_number}/{report_pages_count} in Report")
+            print(f"Has page errors: {has_report_page_errors}")
                 
             # Make sure global switch is set that errors have been found
             if has_report_page_errors:
                 self.has_found_any_errors = True
             
-            report_page_numbers = next_page_number
             
-            self.log_results(
-                report_base_url=report_base_url,
-                url=url,
-                report_page_number=report_page_numbers,
-                has_report_page_errors=has_report_page_errors
-                )
-        
-            print(f"current page id: {current_page_id}")
-            print(f"next page id: {next_page_id}")
-            print(f"page numbers in report: {report_page_numbers}")
-            print(f"has report page errors: {has_report_page_errors}")
+            
+            
 
     def log_results(self, report_base_url, url, report_page_number, has_report_page_errors):
         # make sure results are stored somewhere
@@ -123,22 +144,61 @@ class PowerBIReportProbe:
         df = pd.DataFrame.from_records(self.results)
         print(df)
 
-
-
-
 if __name__ == "__main__":
+    # python run_report_check.py -t "DEV" -n "Blog - Region"
+    ############################## Argument Parsing ################################################
+    parser = argparse.ArgumentParser(description='Check Reports in Power BI Workspaces with Selenium')
+
+    # Add arguments
+    parser.add_argument('-c', '--config', default='tenants.yaml', help='Path to the YAML config file')
+    parser.add_argument('-t', '--tenant', default='DEV', choices=['CCM', 'DEV'], required=True, help='Tenant (CCM or DEV)')
+    parser.add_argument('-n', '--name', default='Blog - Region', required=True, help='Workspace name')
+
+    # Parse the command-line arguments
+    args = parser.parse_args()
+
+    # Access the values using args
+    tenantName = args.tenant
+    workspaceName = args.name
+
+    # Load config
+    config = load_config(args.config)
+
+    # Access config values
+    profile_name = config.get(tenantName)
+
+    print(config)
+    print(profile_name)
+
+    # Replace "ProfilePath" with the actual path to the profile directory you want to use
+    profile_directory = profile_name
+    edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+    command = [edge_path,  "--profile-directory=" + profile_directory,"--start-maximized"]
+
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE) # stdout=subprocess.PIPE, 
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e}")
+    #################################################################################################
+
     client = PowerBIRestHandler()
-    workspaceId = client.get_workspace_by_name("Blog - Region")
+    workspaceId = client.get_workspace_by_name(workspaceName) # Demo: "Blog - Region"
     print(workspaceId)
     report_urls = client.get_reports_in_workspace(workspaceId=workspaceId)
     print(report_urls)
 
+    os.system('taskkill /f /im  "msedge.exe"')
     input("Make sure thePress Enter to continue...")
-
+    
+    
     # setup
-    probe = PowerBIReportProbe(profile_name="Profile 4")
+    # profile_name = "Profile 4"
+    probe = PowerBIReportProbe(profile_name=profile_name) ## CCM=Profile 5 DEV== Profile 4
     probe.init_selenium_driver_edge()
 
+    #report_base_url = "https://app.powerbi.com/groups/6f03024f-41a2-4c42-9029-dc8214b96d32/reports/a9f997f8-bf25-4719-a408-21fca5c5ffee"
+    print(report_urls)
     # main logic
     for report_base_url in report_urls:
         #report_base_url = "https://app.powerbi.com/groups/6f03024f-41a2-4c42-9029-dc8214b96d32/reports/a9f997f8-bf25-4719-a408-21fca5c5ffee"
@@ -154,3 +214,4 @@ if __name__ == "__main__":
 
     # close browser
     probe.driver.quit()
+    
